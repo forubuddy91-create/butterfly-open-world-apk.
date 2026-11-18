@@ -1,0 +1,107 @@
+name: Build Butterfly APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick unzip
+
+      - name: Extract Butterfly Game
+        run: |
+          mkdir -p game-source
+          unzip -q butterfly-open-world-game-enhanced.zip -d game-source
+
+          test -f game-source/package.json
+          test -f game-source/package-lock.json
+          test -f game-source/index.html
+          test -f icon-only.png
+
+      - name: Build Web Game
+        working-directory: game-source
+        run: |
+          npm ci
+          npm run build
+
+      - name: Prepare Capacitor
+        run: |
+          mkdir -p www
+          cp -R game-source/dist/. www/
+
+      - name: Install Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+
+      - name: Create Android Project
+        run: |
+          npx cap init "Butterfly" com.butterfly.openworld --web-dir=www
+          npx cap add android
+          npx cap sync android
+
+      - name: Set App Name and Icon
+        run: |
+          RES=android/app/src/main/res
+
+          sed -i 's|<string name="app_name">.*</string>|<string name="app_name">Butterfly</string>|' "$RES/values/strings.xml"
+
+          for item in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+            density=${item%:*}
+            size=${item#*:}
+            mkdir -p "$RES/mipmap-$density"
+
+            convert icon-only.png -resize "${size}x${size}^" -gravity center -extent "${size}x${size}" "$RES/mipmap-$density/ic_launcher.png"
+
+            cp "$RES/mipmap-$density/ic_launcher.png" "$RES/mipmap-$density/ic_launcher_round.png"
+          done
+
+          for item in mdpi:108 hdpi:162 xhdpi:216 xxhdpi:324 xxxhdpi:432; do
+            density=${item%:*}
+            size=${item#*:}
+            convert icon-only.png -resize "${size}x${size}" -gravity center -extent "${size}x${size}" "$RES/mipmap-$density/ic_launcher_foreground.png"
+          done
+
+          mkdir -p "$RES/mipmap-anydpi-v26" "$RES/values"
+
+          cat > "$RES/mipmap-anydpi-v26/ic_launcher.xml" <<'EOF'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF
+
+          cp "$RES/mipmap-anydpi-v26/ic_launcher.xml" "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
+
+          echo '<resources><color name="ic_launcher_background">#FFFFFF</color></resources>' > "$RES/values/ic_launcher_background.xml"
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Butterfly-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
